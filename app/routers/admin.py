@@ -22,6 +22,7 @@ class SitePayload(BaseModel):
     latitude: float
     longitude: float
     radius: int
+    location: Optional[str] = None
     rating: Optional[float] = None
     helpline: Optional[str] = None
     video_url: Optional[str] = None
@@ -96,6 +97,7 @@ def seed_bulk(payload: SeedBulkRequest, db: Session = Depends(get_db)):
     # Create Site
     site = HeritageSite(
         name=payload.site.name,
+        location=payload.site.location,
         latitude=payload.site.latitude,
         longitude=payload.site.longitude,
         geofence_radius_meters=payload.site.radius,

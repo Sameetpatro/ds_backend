@@ -1,14 +1,111 @@
 # app/routers/sites.py
 # UPDATED: joinedload(Node.images) so NodeDetailScreen gets node_images
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models import HeritageSite, Node, NodeImage, Recommendation
 from app.utils import haversine
-from app.schemas import SiteDetailResponse, NearbySiteResponse, RecommendationResponse, NodePositionResponse
+from app.schemas import (
+    SiteDetailResponse,
+    SiteListItemResponse,
+    SiteImageResponse,
+    NodeResponse,
+    NearbySiteResponse,
+    RecommendationResponse,
+    NodePositionResponse,
+)
 
 router = APIRouter(prefix="/sites", tags=["Sites"])
+
+# Common districts/cities and identifiers for Haryana
+HARYANA_KEYWORDS = [
+    "haryana", "sonipat", "sonepat", "gurugram", "gurgaon",
+    "faridabad", "panipat", "kurukshetra", "karnal", "rohtak",
+    "hisar", "panchkula", "ambala", "yamunanagar", "rewari",
+    "bhiwani", "sirsa", "jind", "jhajjar", "kaithal", "palwal",
+    "fatehabad", "narnaul", "charkhi dadri", "mahendragarh"
+]
+
+
+def _format_site_list(sites: list[HeritageSite]) -> list[SiteListItemResponse]:
+    result = []
+    for site in sites:
+        king_node = next((n for n in site.nodes if n.is_king), None)
+        king_qr = king_node.qr_code_value if king_node else (site.nodes[0].qr_code_value if site.nodes else None)
+        hero_img = site.images[0].image_url if site.images else None
+        node_total = len(site.nodes)
+        result.append(
+            SiteListItemResponse(
+                id=site.id,
+                name=site.name,
+                location=site.location,
+                rating=site.rating or 0.0,
+                nodes_count=node_total,
+                node_count=node_total,
+                nodes=node_total,
+                image=hero_img,
+                summary=site.summary,
+                latitude=site.latitude,
+                longitude=site.longitude,
+                king_node_qr=king_qr,
+            )
+        )
+    return result
+
+
+@router.get("", response_model=list[SiteListItemResponse])
+def get_all_sites(
+    location: Optional[str] = Query(None, description="Search/filter by location or city name (e.g. Sonepat, Delhi)"),
+    search: Optional[str] = Query(None, description="Search by site name, location, or summary"),
+    q: Optional[str] = Query(None, description="Search term alias"),
+    all_sites: bool = Query(False, description="If true, disable default Haryana filter and return all sites"),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all listed heritage sites.
+    - When `location` or `search`/`q` is specified: returns sites around/matching that location or name.
+    - When no location or search is given: returns all sites listed in Haryana by default.
+    - Set `all_sites=true` to retrieve all sites across all states.
+    """
+    query = db.query(HeritageSite).options(
+        joinedload(HeritageSite.images),
+        joinedload(HeritageSite.nodes).joinedload(Node.images)
+    )
+
+    loc_term = (location or "").strip()
+    search_term = (search or q or "").strip()
+
+    if loc_term:
+        query = query.filter(
+            or_(
+                HeritageSite.location.ilike(f"%{loc_term}%"),
+                HeritageSite.name.ilike(f"%{loc_term}%")
+            )
+        )
+    elif search_term:
+        query = query.filter(
+            or_(
+                HeritageSite.name.ilike(f"%{search_term}%"),
+                HeritageSite.location.ilike(f"%{search_term}%"),
+                HeritageSite.summary.ilike(f"%{search_term}%")
+            )
+        )
+    elif not all_sites:
+        # Default behavior: list all sites in Haryana
+        haryana_filters = [HeritageSite.location.ilike(f"%{kw}%") for kw in HARYANA_KEYWORDS]
+        haryana_sites = query.filter(or_(*haryana_filters)).order_by(HeritageSite.id).all()
+        if haryana_sites:
+            return _format_site_list(haryana_sites)
+        # Fallback if no specific Haryana-tagged sites exist in DB yet
+        sites = query.order_by(HeritageSite.id).all()
+        return _format_site_list(sites)
+
+    sites = query.order_by(HeritageSite.id).all()
+    return _format_site_list(sites)
+
 
 
 @router.get("/scan/{qr_value}")
@@ -40,6 +137,7 @@ def get_nearby_sites(
             result.append({
                 "id":              site.id,
                 "name":            site.name,
+                "location":        site.location,
                 "latitude":        site.latitude,
                 "longitude":       site.longitude,
                 "distance_meters": round(distance),

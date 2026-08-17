@@ -211,6 +211,7 @@ class NodeImageResponse(BaseModel):
 class NearbySiteResponse(BaseModel):
     id:              int
     name:            str
+    location:        Optional[str] = None
     latitude:        float
     longitude:       float
     distance_meters: float
@@ -251,6 +252,7 @@ class NodePositionResponse(BaseModel):
 class SiteDetailResponse(BaseModel):
     id:                     int
     name:                   str
+    location:               Optional[str] = None
     latitude:               float
     longitude:              float
     geofence_radius_meters: int
@@ -264,6 +266,24 @@ class SiteDetailResponse(BaseModel):
     upvotes:                int
     images:                 List[SiteImageResponse] = []
     nodes:                  List[NodeResponse]      = []
+
+    class Config:
+        from_attributes = True
+
+
+class SiteListItemResponse(BaseModel):
+    id:                     int
+    name:                   str
+    location:               Optional[str] = None
+    rating:                 float         = 0.0
+    nodes_count:            int           = 0
+    node_count:             int           = 0
+    nodes:                  int           = 0
+    image:                  Optional[str] = None
+    summary:                Optional[str] = None
+    latitude:               Optional[float] = None
+    longitude:              Optional[float] = None
+    king_node_qr:           Optional[str] = None
 
     class Config:
         from_attributes = True

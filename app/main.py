@@ -13,10 +13,11 @@ from app.database import engine, Base
 from app.routers import sites, trips, chat, voice, admin, reviews, amenities
 from app.routers import users, community, stats, insights
 from app.routers import gems, quiz, store, bonus, instants
+from app.routers import dashboard
 
 # Create all tables (new tables: users, node_ratings, node_comments,
 # site_feedback, user_chat_history are created automatically here)
-Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine) #creates all tables if it is not initiated before app starts
 
 # ── In-place migrations ──────────────────────────────────────────────────────
 # create_all() never ALTERs existing tables, so when we add columns to a model
@@ -36,6 +37,9 @@ def _run_inplace_migrations() -> None:
         # Node instants: photographer name snapshot at upload
         """ALTER TABLE node_instants
            ADD COLUMN IF NOT EXISTS photographer_name VARCHAR(255)""",
+        # Heritage sites: location display string
+        """ALTER TABLE heritage_sites
+           ADD COLUMN IF NOT EXISTS location VARCHAR(255)""",
     ]
     with engine.begin() as conn:
         for stmt in statements:
@@ -46,7 +50,7 @@ _run_inplace_migrations()
 
 app = FastAPI(
     title="Dharohar Setu Backend",
-    description="Heritage Travel Platform — SHREE AI Guide · IIIT Sonepat",
+    description="Heritage Travel Platform - SHREE AI Guide · IIIT Sonepat",
     version="2.0.0"
 )
 
@@ -89,6 +93,7 @@ app.include_router(instants.router)
 
 # Admin / seeding
 app.include_router(admin.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/")
