@@ -644,3 +644,194 @@ class NodeInstantLikeResponse(BaseModel):
     instant_id:  int
     liked:       bool
     like_count:  int
+
+
+# ── Admin Portal Schemas ──────────────────────────────────────────────────────
+
+class AdminDashboardStatsResponse(BaseModel):
+    total_registered_users: int
+    active_trips: int
+    total_trips: int
+    completed_trips: int
+    abandoned_trips: int
+    total_mapped_sites: int
+    total_nodes: int
+    total_node_checkins: int
+    total_visitor_reviews: int
+    overall_average_site_rating: float
+
+
+class MonthlyTripItem(BaseModel):
+    month: str  # "YYYY-MM"
+    count: int
+
+
+class MonthlyTripAnalyticsResponse(BaseModel):
+    tripStarts: List[MonthlyTripItem] = []
+    qrScans:    List[MonthlyTripItem] = []
+
+
+class SiteRatingDetail(BaseModel):
+    site_id:        int
+    site_name:      str
+    average_rating: float
+    review_count:   int
+    five_star:      int = 0
+    four_star:      int = 0
+    three_star:     int = 0
+    two_star:       int = 0
+    one_star:       int = 0
+
+
+class RatingDistribution(BaseModel):
+    five_star:  int = 0
+    four_star:  int = 0
+    three_star: int = 0
+    two_star:   int = 0
+    one_star:   int = 0
+
+
+class RatingAnalyticsResponse(BaseModel):
+    rating_distribution:    RatingDistribution
+    total_reviews:          int
+    overall_average_rating: float
+    per_site_ratings:       List[SiteRatingDetail] = []
+
+
+class TopSiteRanking(BaseModel):
+    rank:            int
+    site_id:         int
+    site_name:       str
+    average_rating:  float
+    review_count:    int
+    bayesian_rating: float
+
+
+class NodeCheckInResponse(BaseModel):
+    id:         int
+    node_id:    int
+    node_name:  Optional[str] = None
+    site_id:    int
+    site_name:  Optional[str] = None
+    scan_type:  str = "checkin"
+    scanned_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AdminTouristProfile(BaseModel):
+    user_id:      str
+    display_name: Optional[str] = None
+    email:        Optional[str] = None
+    phone:        Optional[str] = None
+    avatar_url:   Optional[str] = None
+
+
+class AdminSiteSummary(BaseModel):
+    site_id:  int
+    site_name: str
+    location: Optional[str] = None
+
+
+class AdminNodeSummary(BaseModel):
+    node_id:        int
+    node_name:      str
+    sequence_order: int = 0
+    is_king:        bool = False
+
+
+class AdminTripDetailResponse(BaseModel):
+    trip_id:            int
+    tourist:            Optional[AdminTouristProfile] = None
+    heritage_site:      AdminSiteSummary
+    starting_node:      Optional[AdminNodeSummary] = None
+    start_time:         Optional[datetime] = None
+    end_time:           Optional[datetime] = None
+    status:             str
+    trip_duration_mins: Optional[int] = None
+    node_checkins:      List[NodeCheckInResponse] = []
+
+
+class AdminTripListItem(BaseModel):
+    trip_id:            int
+    user_id:            Optional[str] = None
+    user_name:          Optional[str] = None
+    user_email:         Optional[str] = None
+    site_id:            int
+    site_name:          str
+    starting_node_id:   Optional[int] = None
+    starting_node_name: Optional[str] = None
+    start_time:         Optional[datetime] = None
+    end_time:           Optional[datetime] = None
+    status:             str
+    trip_duration_mins: Optional[int] = None
+    checkin_count:      int = 0
+
+
+class RecentActivityItem(BaseModel):
+    activity_id:   str
+    activity_type: str  # trip_start | node_checkin | trip_end | review
+    trip_id:       Optional[int] = None
+    user_id:       Optional[str] = None
+    user_name:     Optional[str] = None
+    site_id:       Optional[int] = None
+    site_name:     Optional[str] = None
+    node_id:       Optional[int] = None
+    node_name:     Optional[str] = None
+    status:        Optional[str] = None
+    timestamp:     datetime
+    headline:      str
+    description:   Optional[str] = None
+
+
+class AdminUserResponse(BaseModel):
+    user_id:           str
+    username:          Optional[str] = None
+    email:             Optional[str] = None
+    phone:             Optional[str] = None
+    role:              str = "TOURIST"
+    trips_taken:       int = 0
+    sites_visited:     int = 0
+    reviews_submitted: int = 0
+    registered_at:     Optional[datetime] = None
+    last_active_at:    Optional[datetime] = None
+
+
+class AdminAccountResponse(BaseModel):
+    user_id:        str
+    username:       Optional[str] = None
+    email:          Optional[str] = None
+    role:           str
+    registered_at:  Optional[datetime] = None
+    last_active_at: Optional[datetime] = None
+    platform:       Optional[str] = "web_portal"
+
+
+class CheckInSiteSummary(BaseModel):
+    site_id:         int
+    site_name:       str
+    total_checkins:  int
+
+
+class CheckInNodeSummary(BaseModel):
+    node_id:     int
+    node_name:   str
+    site_id:     int
+    site_name:   str
+    total_scans: int
+    is_king:     bool = False
+
+
+class CheckInAnalyticsResponse(BaseModel):
+    total_node_checkins:            int
+    trip_start_scans:               int
+    subsequent_checkins:            int
+    checkins_per_site:              List[CheckInSiteSummary] = []
+    checkins_per_node:              List[CheckInNodeSummary] = []
+    most_frequently_scanned_nodes:  List[CheckInNodeSummary] = []
+    scans_over_time:                List[MonthlyTripItem] = []
+
+
+class RoleUpdateRequest(BaseModel):
+    role: str

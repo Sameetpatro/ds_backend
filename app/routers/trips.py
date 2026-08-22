@@ -1,19 +1,43 @@
 # app/routers/trips.py
-# UPGRADED:
-#   - start_trip now accepts firebase_uid and resolves to users.id (UUID)
-#   - end_trip uses UUID in user_visit_history insert
-#   - entry_lat/entry_lng stored on Trip row at start
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 from app.database import get_db
-from app.models import Trip, Node, HeritageSite
+from app.models import Trip, Node, HeritageSite, NodeCheckIn
 from app.routers.users import get_user_uuid
 
 router = APIRouter(prefix="/trips", tags=["Trips"])
+
+TRIP_INACTIVITY_LIMIT_MINUTES = 10
+
+
+def sync_abandoned_trips(db: Session) -> int:
+    """
+    Detects and transitions stale active trips to ABANDONED status if inactive for >= 10 minutes.
+    Called synchronously across trip and admin endpoints to guarantee real-time accuracy.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=TRIP_INACTIVITY_LIMIT_MINUTES)
+    try:
+        res = db.execute(
+            text("""
+                UPDATE trips
+                SET status = 'ABANDONED',
+                    is_active = FALSE,
+                    ended_at = COALESCE(last_activity_at, started_at)
+                WHERE (status = 'ACTIVE' OR (status IS NULL AND is_active = TRUE))
+                  AND COALESCE(last_activity_at, started_at) < :cutoff
+            """),
+            {"cutoff": cutoff}
+        )
+        db.commit()
+        return res.rowcount if res else 0
+    except Exception:
+        db.rollback()
+        return 0
 
 
 @router.post("/start")
@@ -27,34 +51,102 @@ def start_trip(
     """
     Start a trip by scanning any valid node QR code.
     Requires the user to be registered (POST /users/register) first.
-
-    A trip can be started from any node — the king node is a hint for the
-    "main entrance" but not a hard requirement, since heritage sites often
-    have multiple entry points.
+    Sets status=ACTIVE and records the initial QR scan into node_checkins.
     """
+    # Clean up any previously abandoned trips first
+    sync_abandoned_trips(db)
+
     user_uuid = get_user_uuid(firebase_uid, db)
 
     node = db.query(Node).filter(Node.qr_code_value == qr_value).first()
     if not node:
         raise HTTPException(status_code=400, detail="Invalid QR Code")
 
+    now = datetime.now(timezone.utc)
     trip = Trip(
-        user_id    = user_uuid,
-        site_id    = node.site_id,
-        started_at = datetime.now(timezone.utc),  # tz-aware to match TIMESTAMPTZ
-        is_active  = True,
-        entry_lat  = entry_lat,
-        entry_lng  = entry_lng,
+        user_id          = user_uuid,
+        site_id          = node.site_id,
+        starting_node_id = node.id,
+        status           = "ACTIVE",
+        started_at       = now,
+        last_activity_at = now,
+        is_active        = True,
+        entry_lat        = entry_lat,
+        entry_lng        = entry_lng,
     )
     db.add(trip)
+    db.flush()
+
+    # Record the trip-starting QR scan in node_checkins
+    checkin = NodeCheckIn(
+        trip_id    = trip.id,
+        node_id    = node.id,
+        site_id    = node.site_id,
+        user_id    = user_uuid,
+        scan_type  = "trip_start",
+        scanned_at = now,
+    )
+    db.add(checkin)
     db.commit()
     db.refresh(trip)
 
     return {
-        "message":     "Trip Started",
-        "trip_id":     trip.id,
-        "site_id":     node.site_id,
+        "message":           "Trip Started",
+        "trip_id":           trip.id,
+        "site_id":           node.site_id,
+        "starting_node_id":  node.id,
+        "status":            trip.status,
         "started_from_king": bool(node.is_king),
+    }
+
+
+@router.post("/checkin")
+def checkin_node(
+    trip_id: int,
+    qr_value: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Record an in-journey node check-in by scanning a QR code during an active trip.
+    Refreshes the trip's last_activity_at timestamp to prevent auto-abandonment.
+    """
+    sync_abandoned_trips(db)
+
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    if not trip.is_active or trip.status != "ACTIVE":
+        raise HTTPException(status_code=400, detail=f"Cannot check in: trip is {trip.status or 'inactive'}")
+
+    node = db.query(Node).filter(Node.qr_code_value == qr_value).first()
+    if not node:
+        raise HTTPException(status_code=400, detail="Invalid QR Code")
+
+    if node.site_id != trip.site_id:
+        raise HTTPException(status_code=400, detail="Node does not belong to this trip's heritage site")
+
+    now = datetime.now(timezone.utc)
+    trip.last_activity_at = now
+
+    # Record checkin
+    checkin = NodeCheckIn(
+        trip_id    = trip.id,
+        node_id    = node.id,
+        site_id    = node.site_id,
+        user_id    = trip.user_id,
+        scan_type  = "checkin",
+        scanned_at = now,
+    )
+    db.add(checkin)
+    db.commit()
+
+    return {
+        "message":   "Node checked in successfully",
+        "trip_id":   trip.id,
+        "node_id":   node.id,
+        "node_name": node.name,
+        "site_id":   node.site_id,
     }
 
 
@@ -65,17 +157,17 @@ def end_trip(
     db: Session = Depends(get_db),
 ):
     """
-    End an active trip. Records visit history with nodes visited.
+    End an active trip. Transitions status to COMPLETED and records visit history.
     """
     trip = db.query(Trip).filter(Trip.id == trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
 
+    now = datetime.now(timezone.utc)
     trip.is_active = False
-    # Use a tz-aware UTC timestamp; the column is TIMESTAMPTZ so a naive
-    # datetime here would crash on `ended_at - started_at` below with
-    # "can't subtract offset-naive and offset-aware datetimes".
-    trip.ended_at  = datetime.now(timezone.utc)
+    trip.status    = "COMPLETED"
+    trip.ended_at  = now
+    trip.last_activity_at = now
 
     site      = db.query(HeritageSite).filter(HeritageSite.id == trip.site_id).first()
     site_name = site.name if site else "Unknown"
@@ -84,15 +176,30 @@ def end_trip(
     if visited_nodes:
         node_ids = [int(x.strip()) for x in visited_nodes.split(",") if x.strip().isdigit()]
 
-    total_nodes    = db.query(Node).filter(Node.site_id == trip.site_id).count()
+    # If starting node is known and not in node_ids, include it
+    if trip.starting_node_id and trip.starting_node_id not in node_ids:
+        node_ids.insert(0, trip.starting_node_id)
+
+    total_nodes     = db.query(Node).filter(Node.site_id == trip.site_id).count()
     nodes_completed = len(node_ids)
+
+    # Sync node checkins for any visited nodes not yet in node_checkins
+    existing_checked_nodes = {
+        c.node_id for c in db.query(NodeCheckIn.node_id).filter(NodeCheckIn.trip_id == trip.id).all()
+    }
+    for nid in node_ids:
+        if nid not in existing_checked_nodes:
+            db.add(NodeCheckIn(
+                trip_id    = trip.id,
+                node_id    = nid,
+                site_id    = trip.site_id,
+                user_id    = trip.user_id,
+                scan_type  = "checkin",
+                scanned_at = now,
+            ))
 
     duration_mins = None
     if trip.started_at and trip.ended_at:
-        # Defensive: align tz-awareness on both sides before subtracting.
-        # Postgres TIMESTAMPTZ comes back tz-aware, but if any historical
-        # row was inserted with a naive value (older deploys did
-        # datetime.utcnow()), the subtraction would TypeError.
         started = trip.started_at
         ended   = trip.ended_at
         if started.tzinfo is None:
@@ -103,53 +210,56 @@ def end_trip(
         duration_mins = max(0, int(delta.total_seconds() / 60))
 
     try:
-        db.execute(
-            text("""
-                INSERT INTO user_visit_history
-                    (user_id, site_id, trip_id, site_name, nodes_visited, total_nodes,
-                     nodes_completed, completed, visited_at, ended_at, duration_mins,
-                     entry_lat, entry_lng)
-                VALUES
-                    (:user_id, :site_id, :trip_id, :site_name, :nodes_visited, :total_nodes,
-                     :nodes_completed, true, :visited_at, :ended_at, :duration_mins,
-                     :entry_lat, :entry_lng)
-                ON CONFLICT (user_id, trip_id) DO UPDATE SET
-                    ended_at        = EXCLUDED.ended_at,
-                    duration_mins   = EXCLUDED.duration_mins,
-                    nodes_visited   = EXCLUDED.nodes_visited,
-                    nodes_completed = EXCLUDED.nodes_completed
-            """),
-            {
-                "user_id":        str(trip.user_id),
-                "site_id":        trip.site_id,
-                "trip_id":        trip.id,
-                "site_name":      site_name,
-                "nodes_visited":  node_ids,
-                "total_nodes":    total_nodes,
-                "nodes_completed": nodes_completed,
-                "visited_at":     trip.started_at,
-                "ended_at":       trip.ended_at,
-                "duration_mins":  duration_mins,
-                "entry_lat":      trip.entry_lat,
-                "entry_lng":      trip.entry_lng,
-            }
+        from app.models import UserVisitHistory
+        uvh = (
+            db.query(UserVisitHistory)
+            .filter(UserVisitHistory.user_id == trip.user_id, UserVisitHistory.trip_id == trip.id)
+            .first()
         )
+        if uvh:
+            uvh.ended_at = trip.ended_at
+            uvh.duration_mins = duration_mins
+            uvh.nodes_visited = node_ids
+            uvh.nodes_completed = nodes_completed
+            uvh.completed = True
+        elif trip.user_id:
+            uvh = UserVisitHistory(
+                user_id         = trip.user_id,
+                site_id         = trip.site_id,
+                trip_id         = trip.id,
+                site_name       = site_name,
+                nodes_visited   = node_ids,
+                total_nodes     = total_nodes,
+                nodes_completed = nodes_completed,
+                completed       = True,
+                visited_at      = trip.started_at,
+                ended_at        = trip.ended_at,
+                duration_mins   = duration_mins,
+                entry_lat       = trip.entry_lat,
+                entry_lng       = trip.entry_lng,
+            )
+            db.add(uvh)
     except Exception as e:
-        # Log but don't fail — trip end is more important than history write
         import logging
         logging.getLogger(__name__).warning(f"[end_trip] visit history insert failed: {e}")
 
     db.commit()
-    return {"message": "Trip Ended", "duration_mins": duration_mins}
+    return {
+        "message":       "Trip Ended",
+        "status":        trip.status,
+        "duration_mins": duration_mins,
+    }
 
 
 @router.get("/active/{firebase_uid}")
 def get_active_trip(firebase_uid: str, db: Session = Depends(get_db)):
     """Return the current active trip for a user, if any."""
+    sync_abandoned_trips(db)
+
     user_uuid = get_user_uuid(firebase_uid, db)
     trip = (
         db.query(Trip)
-        .filter(Trip.user_id == user_uuid, Trip.is_active == True)
+        .filter(Trip.user_id == user_uuid, Trip.is_active == True, Trip.status == "ACTIVE")
         .order_by(Trip.started_at.desc())
         .first()
     )
@@ -159,5 +269,6 @@ def get_active_trip(firebase_uid: str, db: Session = Depends(get_db)):
         "active":      True,
         "trip_id":     trip.id,
         "site_id":     trip.site_id,
-        "started_at":  trip.started_at.isoformat(),
+        "status":      trip.status,
+        "started_at":  trip.started_at.isoformat() if trip.started_at else None,
     }

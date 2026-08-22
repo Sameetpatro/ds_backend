@@ -34,16 +34,36 @@ def _run_inplace_migrations() -> None:
         # Gamification: gems wallet balance on users
         """ALTER TABLE users
            ADD COLUMN IF NOT EXISTS gems INTEGER NOT NULL DEFAULT 0""",
+        # User roles (admin support)
+        """ALTER TABLE users
+           ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'TOURIST'""",
         # Node instants: photographer name snapshot at upload
         """ALTER TABLE node_instants
            ADD COLUMN IF NOT EXISTS photographer_name VARCHAR(255)""",
         # Heritage sites: location display string
         """ALTER TABLE heritage_sites
            ADD COLUMN IF NOT EXISTS location VARCHAR(255)""",
+        # Trip lifecycle & activity tracking
+        """ALTER TABLE trips
+           ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'""",
+        """ALTER TABLE trips
+           ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ DEFAULT now()""",
+        """ALTER TABLE trips
+           ADD COLUMN IF NOT EXISTS starting_node_id INTEGER
+           REFERENCES nodes(id) ON DELETE SET NULL""",
+        """CREATE INDEX IF NOT EXISTS ix_trips_status ON trips (status)""",
+        """CREATE INDEX IF NOT EXISTS ix_trips_started_at ON trips (started_at)""",
+        """CREATE INDEX IF NOT EXISTS ix_node_checkins_trip ON node_checkins (trip_id)""",
+        """CREATE INDEX IF NOT EXISTS ix_node_checkins_node ON node_checkins (node_id)""",
+        """CREATE INDEX IF NOT EXISTS ix_node_checkins_site ON node_checkins (site_id)""",
+        """CREATE INDEX IF NOT EXISTS ix_node_checkins_scanned_at ON node_checkins (scanned_at)""",
     ]
     with engine.begin() as conn:
         for stmt in statements:
-            conn.execute(text(stmt))
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                pass
 
 
 _run_inplace_migrations()
