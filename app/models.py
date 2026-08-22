@@ -22,6 +22,7 @@ from sqlalchemy import (
     Index,
     SmallInteger,
     UniqueConstraint,
+    JSON,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
@@ -43,6 +44,7 @@ class User(Base):
     avatar_url     = Column(Text, nullable=True)
     preferred_lang = Column(String(10), default="en-IN")
     is_anonymous   = Column(Boolean, default=False)
+    role           = Column(String(20), default="TOURIST", nullable=False, server_default=text("'TOURIST'"))
     gems           = Column(Integer, default=0, nullable=False, server_default=text("0"))
     created_at     = Column(DateTime(timezone=True), server_default=func.now())
     last_active_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -117,6 +119,7 @@ class Node(Base):
             "site_id",
             unique=True,
             postgresql_where=text("is_king = TRUE"),
+            sqlite_where=text("is_king = 1"),
         ),
     )
 
@@ -157,16 +160,45 @@ class NodeImage(Base):
 class Trip(Base):
     __tablename__ = "trips"
 
-    id         = Column(Integer, primary_key=True, index=True)
-    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    site_id    = Column(Integer, ForeignKey("heritage_sites.id", ondelete="CASCADE"), nullable=False)
-    started_at = Column(DateTime(timezone=True), server_default=func.now())
-    ended_at   = Column(DateTime(timezone=True), nullable=True)
-    is_active  = Column(Boolean, default=True)
-    entry_lat  = Column(Float, nullable=True)
-    entry_lng  = Column(Float, nullable=True)
+    id               = Column(Integer, primary_key=True, index=True)
+    user_id          = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    site_id          = Column(Integer, ForeignKey("heritage_sites.id", ondelete="CASCADE"), nullable=False)
+    starting_node_id = Column(Integer, ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True)
+    status           = Column(String(20), default="ACTIVE", nullable=False, server_default=text("'ACTIVE'")) # ACTIVE | COMPLETED | ABANDONED
+    started_at       = Column(DateTime(timezone=True), server_default=func.now())
+    ended_at         = Column(DateTime(timezone=True), nullable=True)
+    last_activity_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    is_active        = Column(Boolean, default=True)
+    entry_lat        = Column(Float, nullable=True)
+    entry_lng        = Column(Float, nullable=True)
 
-    site = relationship("HeritageSite", back_populates="trips")
+    site          = relationship("HeritageSite", back_populates="trips")
+    user          = relationship("User")
+    starting_node = relationship("Node")
+    checkins      = relationship("NodeCheckIn", back_populates="trip", cascade="all, delete-orphan", order_by="NodeCheckIn.scanned_at")
+
+
+# ── Node Check-ins & QR Scans ─────────────────────────────────────────────────
+
+class NodeCheckIn(Base):
+    """
+    Individual node check-in / QR scan records throughout a visitor's trip.
+    Differentiates trip_start scans from in-journey node check-ins.
+    """
+    __tablename__ = "node_checkins"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    trip_id    = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=True, index=True)
+    node_id    = Column(Integer, ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, index=True)
+    site_id    = Column(Integer, ForeignKey("heritage_sites.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    scan_type  = Column(String(30), default="checkin", nullable=False)  # 'trip_start' | 'checkin'
+    scanned_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    trip = relationship("Trip", back_populates="checkins")
+    node = relationship("Node")
+    site = relationship("HeritageSite")
+    user = relationship("User")
 
 
 # ── Visit History ─────────────────────────────────────────────────────────────
@@ -180,7 +212,7 @@ class UserVisitHistory(Base):
     site_id          = Column(Integer, ForeignKey("heritage_sites.id", ondelete="CASCADE"), nullable=False)
     trip_id          = Column(Integer, ForeignKey("trips.id", ondelete="SET NULL"), nullable=True)
     site_name        = Column(String(255), nullable=False)
-    nodes_visited    = Column(ARRAY(Integer), server_default=text("'{}'"), default=lambda: [])
+    nodes_visited    = Column(ARRAY(Integer).with_variant(JSON, "sqlite"), server_default=text("'{}'"), default=lambda: [])
     total_nodes      = Column(Integer, default=0)
     nodes_completed  = Column(Integer, default=0)
     completed        = Column(Boolean, default=True)
@@ -467,7 +499,7 @@ class QuizQuestion(Base):
     session_id    = Column(Integer, ForeignKey("quiz_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     idx           = Column(Integer, nullable=False)         # 0-based order within the session
     question      = Column(Text, nullable=False)
-    options       = Column(ARRAY(String), nullable=False)
+    options       = Column(ARRAY(String).with_variant(JSON, "sqlite"), nullable=False)
     correct_index = Column(SmallInteger, nullable=False)
     source_node_id = Column(Integer, nullable=True)
     answered      = Column(Boolean, default=False)
