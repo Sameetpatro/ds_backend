@@ -2,13 +2,14 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from app.database import get_db
 from app.models import Trip, Node, HeritageSite, NodeCheckIn
 from app.routers.users import get_user_uuid
+from app.utils import normalize_qr_value
 
 router = APIRouter(prefix="/trips", tags=["Trips"])
 
@@ -58,7 +59,13 @@ def start_trip(
 
     user_uuid = get_user_uuid(firebase_uid, db)
 
-    node = db.query(Node).filter(Node.qr_code_value == qr_value).first()
+    normalized = normalize_qr_value(qr_value)
+    node = db.query(Node).filter(
+        or_(
+            Node.qr_code_value == qr_value,
+            Node.qr_code_value == normalized
+        )
+    ).first()
     if not node:
         raise HTTPException(status_code=400, detail="Invalid QR Code")
 

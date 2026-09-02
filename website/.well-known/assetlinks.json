@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.example.humsafar",
+      "sha256_cert_fingerprints": [
+        "7F:47:04:22:EF:98:91:A0:7B:DA:41:84:C6:E8:F8:8A:C5:FD:DC:A1:EF:2D:07:2B:A3:A1:1A:45:16:AD:7E:88"
+      ]
+    }
+  }
+]

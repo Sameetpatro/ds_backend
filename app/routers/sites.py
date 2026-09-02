@@ -7,7 +7,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models import HeritageSite, Node, NodeImage, Recommendation
-from app.utils import haversine
+from app.utils import haversine, normalize_qr_value
 from app.schemas import (
     SiteDetailResponse,
     SiteListItemResponse,
@@ -108,9 +108,15 @@ def get_all_sites(
 
 
 
-@router.get("/scan/{qr_value}")
+@router.get("/scan/{qr_value:path}")
 def scan_qr(qr_value: str, db: Session = Depends(get_db)):
-    node = db.query(Node).filter(Node.qr_code_value == qr_value).first()
+    normalized = normalize_qr_value(qr_value)
+    node = db.query(Node).filter(
+        or_(
+            Node.qr_code_value == qr_value,
+            Node.qr_code_value == normalized
+        )
+    ).first()
     if not node:
         return {"status": "invalid"}
     return {
@@ -119,6 +125,7 @@ def scan_qr(qr_value: str, db: Session = Depends(get_db)):
         "node_id":        node.id,
         "sequence_order": node.sequence_order,
         "node_name":      node.name,
+        "is_king":        node.is_king,
     }
 
 
