@@ -114,7 +114,9 @@ def scan_qr(qr_value: str, db: Session = Depends(get_db)):
     node = db.query(Node).filter(
         or_(
             Node.qr_code_value == qr_value,
-            Node.qr_code_value == normalized
+            Node.qr_code_value == normalized,
+            Node.legacy_qr_code_value == qr_value,
+            Node.legacy_qr_code_value == normalized,
         )
     ).first()
     if not node:

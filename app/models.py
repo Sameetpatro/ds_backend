@@ -133,7 +133,8 @@ class Node(Base):
     description    = Column(Text)
     video_url      = Column(String)
     image_url      = Column(String)                         # legacy single image — kept for compat
-    qr_code_value  = Column(String(255), unique=True, nullable=False)
+    qr_code_value        = Column(String(255), unique=True, nullable=False)
+    legacy_qr_code_value = Column(String(255), nullable=True, index=True)
     avg_rating     = Column(Float, default=0.0)             # denormalized — updated transactionally
     rating_count   = Column(Integer, default=0)
 

@@ -1103,7 +1103,7 @@ class NodePayload(BaseModel):
     longitude: float
     video_url: Optional[str] = None
     sequence: int
-    qr: str
+    qr: Optional[str] = None
     description: Optional[str] = None
     images: List[str] = []
     is_king: bool = False
@@ -1173,6 +1173,14 @@ def seed_bulk(payload: SeedBulkRequest, db: Session = Depends(get_db)):
             db.add(SiteImage(site_id=site.id, image_url=url, display_order=order))
 
     for node_data in payload.nodes:
+        raw_qr = node_data.qr.strip() if node_data.qr else None
+        if raw_qr and is_base62(raw_qr) and len(raw_qr) <= 6:
+            b62_code = raw_qr
+            legacy_qr = None
+        else:
+            b62_code = get_next_node_base62(db)
+            legacy_qr = raw_qr
+
         node = Node(
             site_id=site.id,
             name=node_data.name,
@@ -1180,7 +1188,8 @@ def seed_bulk(payload: SeedBulkRequest, db: Session = Depends(get_db)):
             longitude=node_data.longitude,
             sequence_order=node_data.sequence,
             is_king=node_data.is_king,
-            qr_code_value=node_data.qr,
+            qr_code_value=b62_code,
+            legacy_qr_code_value=legacy_qr,
             description=node_data.description,
             video_url=node_data.video_url,
         )

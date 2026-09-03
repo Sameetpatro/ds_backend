@@ -2,7 +2,7 @@
 
 import os
 import unittest
-from app.utils import normalize_qr_value, format_qr_url
+from app.utils import normalize_qr_value, format_qr_url, encode_base62, decode_base62, is_base62
 
 
 class TestQrCompatibility(unittest.TestCase):
@@ -83,6 +83,36 @@ class TestQrCompatibility(unittest.TestCase):
 
         url_default = format_qr_url("IIITS-0-KING")
         self.assertTrue(url_default.endswith("/IIITS-0-KING"))
+
+
+
+    def test_base62_encode_decode(self):
+        self.assertEqual(encode_base62(100001), "Q0v")
+        self.assertEqual(encode_base62(100002), "Q0w")
+        self.assertEqual(encode_base62(100006), "Q10")
+        self.assertEqual(decode_base62("Q0v"), 100001)
+        self.assertEqual(decode_base62("Q0w"), 100002)
+        self.assertEqual(decode_base62("Q10"), 100006)
+
+    def test_base62_validation(self):
+        self.assertTrue(is_base62("Q0v"))
+        self.assertTrue(is_base62("Q10"))
+        self.assertFalse(is_base62("IIITS-0-KING"))
+        self.assertFalse(is_base62(None))
+
+    def test_normalize_qr_value_base62_url(self):
+        self.assertEqual(
+            normalize_qr_value("https://dharohar-setu.onrender.com/node/Q0v"),
+            "Q0v"
+        )
+        self.assertEqual(
+            normalize_qr_value("https://dharohar-setu.onrender.com/node/Q0v/"),
+            "Q0v"
+        )
+        self.assertEqual(
+            normalize_qr_value("https://dharohar-setu.onrender.com/node/Q0v?utm_source=lens#spot"),
+            "Q0v"
+        )
 
 
 if __name__ == "__main__":

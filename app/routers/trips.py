@@ -63,7 +63,9 @@ def start_trip(
     node = db.query(Node).filter(
         or_(
             Node.qr_code_value == qr_value,
-            Node.qr_code_value == normalized
+            Node.qr_code_value == normalized,
+            Node.legacy_qr_code_value == qr_value,
+            Node.legacy_qr_code_value == normalized,
         )
     ).first()
     if not node:
@@ -126,7 +128,15 @@ def checkin_node(
     if not trip.is_active or trip.status != "ACTIVE":
         raise HTTPException(status_code=400, detail=f"Cannot check in: trip is {trip.status or 'inactive'}")
 
-    node = db.query(Node).filter(Node.qr_code_value == qr_value).first()
+    normalized = normalize_qr_value(qr_value)
+    node = db.query(Node).filter(
+        or_(
+            Node.qr_code_value == qr_value,
+            Node.qr_code_value == normalized,
+            Node.legacy_qr_code_value == qr_value,
+            Node.legacy_qr_code_value == normalized,
+        )
+    ).first()
     if not node:
         raise HTTPException(status_code=400, detail="Invalid QR Code")
 

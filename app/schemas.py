@@ -229,7 +229,8 @@ class NodeResponse(BaseModel):
     video_url:      Optional[str]  = None
     image_url:      Optional[str]  = None
     images:         List[NodeImageResponse] = []
-    qr_code_value:  str
+    qr_code_value:        str
+    legacy_qr_code_value: Optional[str] = None
     avg_rating:     float          = 0.0
     rating_count:   int            = 0
 
