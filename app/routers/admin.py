@@ -1,3 +1,4 @@
+from app.services.rag import invalidate_site_cache
 # app/routers/admin.py
 
 import os
@@ -1228,6 +1229,7 @@ def seed_bulk(payload: SeedBulkRequest, db: Session = Depends(get_db)):
             ))
 
     db.commit()
+    invalidate_site_cache(site.id)
 
     return {
         "success": True,
@@ -1261,10 +1263,12 @@ def seed_prompt(payload: SeedPromptRequest, db: Session = Depends(get_db)):
         existing.title = title
         existing.content = payload.prompt_text
         db.commit()
+        invalidate_site_cache(payload.site_id)
         return {"success": True, "action": "updated", "site_id": payload.site_id, "node_id": payload.node_id, "title": title}
 
     db.add(Prompt(site_id=payload.site_id, node_id=payload.node_id, title=title, content=payload.prompt_text))
     db.commit()
+    invalidate_site_cache(payload.site_id)
 
     return {"success": True, "action": "created", "site_id": payload.site_id, "node_id": payload.node_id, "title": title}
 

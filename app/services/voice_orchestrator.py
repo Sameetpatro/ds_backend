@@ -1,3 +1,4 @@
+from app.services.rag import run_rag_chat
 # app/services/voice_orchestrator.py
 # FIXED:
 #   Previously site_id was passed in but NEVER used — LLM only got site_name string.
@@ -109,44 +110,27 @@ async def run(
     except Exception as exc:
         raise RuntimeError(f"STT_FAILED: {exc}") from exc
 
-    # ── Stage 2: LLM ─────────────────────────────────────────────────────
+    # ── Stage 2: LLM (LangChain RAG) ──────────────────────────────────────
     lang_instruction = _LANG_INSTRUCTIONS.get(lang_name, _LANG_INSTRUCTIONS["ENGLISH"])
-
-    if db is not None:
-        try:
-            site_id_int = int(site_id)
-            heritage_context = _get_heritage_context(db, site_id_int, node_id, site_name)
-        except Exception as exc:
-            logger.warning(f"[Pipeline] DB context fetch failed: {exc} — using site_name fallback")
-            heritage_context = f"Heritage Site: {site_name}"
-    else:
-        heritage_context = f"Heritage Site: {site_name}"
-
-    system_prompt = f"""You are SHREE, the official AI heritage voice guide of HUMSAFAR.
-
-Language instruction: {lang_instruction}
-
-Rules:
-1. Answer using the heritage context provided below.
-2. If the answer is not in the context, use your general knowledge about this site.
-3. Never invent false facts.
-4. Keep responses to 2-4 sentences — this is a voice interface, not a text essay.
-5. Do NOT use markdown, asterisks, or bullet points — spoken text only.
-
-Heritage Context:
-------------------
-{heritage_context}
-------------------
-"""
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": user_text},
-    ]
-
     logger.info(f"[Pipeline] LLM start — userText='{user_text[:60]}'")
+
     try:
-        bot_text = await call_openrouter(messages)
+        if db is not None and str(site_id).strip().isdigit():
+            site_id_int = int(site_id)
+            bot_text = await run_rag_chat(
+                site_id=site_id_int,
+                node_id=node_id,
+                message=user_text,
+                history=[],
+                db=db,
+                language_instruction=lang_instruction,
+            )
+        else:
+            messages = [
+                {"role": "system", "content": f"You are SHREE, AI voice guide for {site_name}. {lang_instruction}. Keep answers to 2-3 sentences. No markdown."},
+                {"role": "user", "content": user_text},
+            ]
+            bot_text = await call_openrouter(messages)
     except Exception as exc:
         raise RuntimeError(f"LLM_FAILED: {exc}") from exc
 
