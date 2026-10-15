@@ -76,7 +76,15 @@ def _resolve_llm_config() -> Tuple[str, str, str]:
     model = os.getenv("LLM_MODEL")
 
     if not api_key:
-        if os.getenv("DEEPSEEK_API_KEY"):
+        if os.getenv("GROQ_API_KEY"):
+            api_key = os.getenv("GROQ_API_KEY")
+            base_url = base_url or "https://api.groq.com/openai/v1"
+            model = model or "openai/gpt-oss-120b"
+        elif os.getenv("GEMINI_API_KEY"):
+            api_key = os.getenv("GEMINI_API_KEY")
+            base_url = base_url or "https://generativelanguage.googleapis.com/v1beta/openai"
+            model = model or "gemini-1.5-flash"
+        elif os.getenv("DEEPSEEK_API_KEY"):
             api_key = os.getenv("DEEPSEEK_API_KEY")
             base_url = base_url or "https://api.deepseek.com/v1"
             model = model or "deepseek-chat"
@@ -86,7 +94,7 @@ def _resolve_llm_config() -> Tuple[str, str, str]:
             model = model or "openai/gpt-4o-mini"
         else:
             raise RuntimeError(
-                "Neither DEEPSEEK_API_KEY nor OPENROUTER_API_KEY is configured in environment."
+                "No LLM API key found. Set GROQ_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, or OPENROUTER_API_KEY."
             )
 
     base_url = base_url or "https://api.deepseek.com/v1"

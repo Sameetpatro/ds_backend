@@ -6,3 +6,6 @@ __pycache__/
 *.pyc
 seed-data/
 docs/
+*.db
+*.sqlite
+*.sqlite3
