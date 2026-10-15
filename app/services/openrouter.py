@@ -1,8 +1,7 @@
 # app/services/openrouter.py
-# NEW FILE — extracted verbatim from the existing app/services.py
-# The original services.py can be DELETED after adding this file.
+# Unified LLM caller supporting DeepSeek (native) and OpenRouter.
 # Import path for existing code: `from app.services import call_openrouter`
-# (unchanged — __init__.py re-exports it).
+# (also aliased as `call_llm`).
 
 import os
 import httpx
@@ -10,33 +9,72 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-_OPENROUTER_TIMEOUT = 60.0
+_LLM_TIMEOUT = 60.0
+
+
+def get_llm_credentials():
+    """
+    Returns (api_key, endpoint_url, model_name).
+    Prioritizes DEEPSEEK_API_KEY if present, then OPENROUTER_API_KEY,
+    allowing explicit overrides via LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL.
+    """
+    api_key = os.getenv("LLM_API_KEY")
+    base_url = os.getenv("LLM_BASE_URL")
+    model = os.getenv("LLM_MODEL")
+
+    if not api_key:
+        if os.getenv("DEEPSEEK_API_KEY"):
+            api_key = os.getenv("DEEPSEEK_API_KEY")
+            base_url = base_url or "https://api.deepseek.com/v1/chat/completions"
+            model = model or "deepseek-chat"
+        elif os.getenv("OPENROUTER_API_KEY"):
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            base_url = base_url or "https://openrouter.ai/api/v1/chat/completions"
+            model = model or "openai/gpt-4o-mini"
+        else:
+            raise RuntimeError(
+                "Neither DEEPSEEK_API_KEY nor OPENROUTER_API_KEY is configured in environment."
+            )
+
+    # Normalize endpoint URL
+    if not base_url:
+        base_url = "https://api.deepseek.com/v1/chat/completions"
+    elif not base_url.endswith("/chat/completions"):
+        base_url = base_url.rstrip("/") + "/chat/completions"
+
+    if not model:
+        model = "deepseek-chat" if "deepseek" in base_url else "openai/gpt-4o-mini"
+
+    return api_key, base_url, model
 
 
 async def call_openrouter(messages: list) -> str:
     """
-    Sends messages to OpenRouter (OpenAI-compatible) and returns the reply text.
-    Raises RuntimeError on non-200 status or missing response fields.
+    Sends messages to the configured LLM provider (DeepSeek or OpenRouter)
+    and returns the assistant reply text.
     """
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not set in environment")
+    api_key, url, model = get_llm_credentials()
 
-    async with httpx.AsyncClient(timeout=_OPENROUTER_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
         response = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            url,
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type":  "application/json",
             },
             json={
-                "model":    "openai/gpt-4o-mini",
+                "model":    model,
                 "messages": messages,
             }
         )
 
     if response.status_code != 200:
-        raise RuntimeError(f"OpenRouter error {response.status_code}: {response.text}")
+        provider = "DeepSeek" if "deepseek" in url else "LLM"
+        raise RuntimeError(f"{provider} error {response.status_code}: {response.text}")
 
     data = response.json()
     return data["choices"][0]["message"]["content"]
+
+
+# Alias for modern callers
+call_llm = call_openrouter

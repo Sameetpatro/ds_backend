@@ -12,7 +12,11 @@ import logging
 from typing import Optional, List, Dict, Tuple
 from dotenv import load_dotenv
 
+import math
+import re
+
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -25,40 +29,112 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-EMBEDDING_MODEL = "openai/text-embedding-3-small"
-CHAT_MODEL = "openai/gpt-4o-mini"
-
 # In-memory vector store cache per site_id: {site_id: InMemoryVectorStore}
 _SITE_VECTORSTORES: Dict[int, InMemoryVectorStore] = {}
 
-_embeddings: Optional[OpenAIEmbeddings] = None
+_embeddings: Optional[Embeddings] = None
 _llm: Optional[ChatOpenAI] = None
 
 
-def get_embeddings() -> OpenAIEmbeddings:
+class KeywordEmbeddings(Embeddings):
+    """
+    Lightweight, deterministic token-overlap embeddings for local similarity search.
+    Requires no external API, zero network latency, zero costs, and zero quota limits.
+    Perfect fallback when using LLM providers without an embeddings API (such as DeepSeek).
+    """
+
+    def __init__(self, dim: int = 256):
+        self.dim = dim
+
+    def _vectorize(self, text: str) -> List[float]:
+        tokens = re.findall(r"\b\w+\b", text.lower())
+        vec = [0.0] * self.dim
+        if not tokens:
+            return vec
+        for t in tokens:
+            idx = abs(hash(t)) % self.dim
+            vec[idx] += 1.0
+        norm = math.sqrt(sum(x * x for x in vec))
+        if norm > 0:
+            vec = [x / norm for x in vec]
+        return vec
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return [self._vectorize(t) for t in texts]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._vectorize(text)
+
+
+def _resolve_llm_config() -> Tuple[str, str, str]:
+    """
+    Resolves (api_key, base_url, model) checking DEEPSEEK_API_KEY,
+    OPENROUTER_API_KEY, or generic LLM_* overrides.
+    """
+    api_key = os.getenv("LLM_API_KEY")
+    base_url = os.getenv("LLM_BASE_URL")
+    model = os.getenv("LLM_MODEL")
+
+    if not api_key:
+        if os.getenv("DEEPSEEK_API_KEY"):
+            api_key = os.getenv("DEEPSEEK_API_KEY")
+            base_url = base_url or "https://api.deepseek.com/v1"
+            model = model or "deepseek-chat"
+        elif os.getenv("OPENROUTER_API_KEY"):
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            base_url = base_url or "https://openrouter.ai/api/v1"
+            model = model or "openai/gpt-4o-mini"
+        else:
+            raise RuntimeError(
+                "Neither DEEPSEEK_API_KEY nor OPENROUTER_API_KEY is configured in environment."
+            )
+
+    base_url = base_url or "https://api.deepseek.com/v1"
+    base_url = base_url.replace("/chat/completions", "").rstrip("/")
+    if not model:
+        model = "deepseek-chat" if "deepseek" in base_url else "openai/gpt-4o-mini"
+
+    return api_key, base_url, model
+
+
+def get_embeddings() -> Embeddings:
     global _embeddings
     if _embeddings is None:
-        if not OPENROUTER_API_KEY:
-            raise RuntimeError("OPENROUTER_API_KEY is not set in environment.")
-        _embeddings = OpenAIEmbeddings(
-            base_url=OPENROUTER_BASE_URL,
-            api_key=OPENROUTER_API_KEY,
-            model=EMBEDDING_MODEL,
-        )
+        emb_key = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not emb_key and os.getenv("OPENROUTER_API_KEY") and not os.getenv("DEEPSEEK_API_KEY"):
+            emb_key = os.getenv("OPENROUTER_API_KEY")
+
+        if emb_key:
+            emb_base_url = os.getenv("EMBEDDING_BASE_URL") or (
+                "https://openrouter.ai/api/v1" if "sk-or-" in emb_key else "https://api.openai.com/v1"
+            )
+            emb_model = os.getenv(
+                "EMBEDDING_MODEL",
+                "openai/text-embedding-3-small" if "openrouter" in emb_base_url else "text-embedding-3-small"
+            )
+            try:
+                _embeddings = OpenAIEmbeddings(
+                    base_url=emb_base_url,
+                    api_key=emb_key,
+                    model=emb_model,
+                )
+            except Exception as e:
+                logger.warning(f"[RAG] Failed to init OpenAIEmbeddings ({e}), falling back to KeywordEmbeddings")
+                _embeddings = KeywordEmbeddings()
+        else:
+            logger.info("[RAG] Using local KeywordEmbeddings (zero external API cost)")
+            _embeddings = KeywordEmbeddings()
     return _embeddings
 
 
 def get_llm(temperature: float = 0.2) -> ChatOpenAI:
     global _llm
     if _llm is None or _llm.temperature != temperature:
-        if not OPENROUTER_API_KEY:
-            raise RuntimeError("OPENROUTER_API_KEY is not set in environment.")
+        api_key, base_url, model = _resolve_llm_config()
         _llm = ChatOpenAI(
-            base_url=OPENROUTER_BASE_URL,
-            api_key=OPENROUTER_API_KEY,
-            model=CHAT_MODEL,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
             temperature=temperature,
             max_tokens=400,
             timeout=45.0,
@@ -74,9 +150,12 @@ def invalidate_site_cache(site_id: int) -> None:
 
 
 def clear_all_caches() -> None:
-    """Clears all cached site vector stores."""
+    """Clears all cached site vector stores and client singletons."""
+    global _SITE_VECTORSTORES, _embeddings, _llm
     _SITE_VECTORSTORES.clear()
-    logger.info("[RAG] Cleared all site vector store caches")
+    _embeddings = None
+    _llm = None
+    logger.info("[RAG] Cleared all site vector store caches and client singletons")
 
 
 def build_site_documents(db: Session, site_id: int) -> Tuple[List[Document], str, Optional[HeritageSite]]:
@@ -179,7 +258,14 @@ def get_or_build_site_vectorstore(db: Session, site_id: int) -> InMemoryVectorSt
     split_docs = splitter.split_documents(docs)
 
     embeddings = get_embeddings()
-    vectorstore = InMemoryVectorStore.from_documents(split_docs, embedding=embeddings)
+    try:
+        vectorstore = InMemoryVectorStore.from_documents(split_docs, embedding=embeddings)
+    except Exception as exc:
+        logger.warning(
+            f"[RAG] Failed building vectorstore with {embeddings.__class__.__name__} ({exc}). "
+            "Falling back to local KeywordEmbeddings."
+        )
+        vectorstore = InMemoryVectorStore.from_documents(split_docs, embedding=KeywordEmbeddings())
 
     _SITE_VECTORSTORES[site_id] = vectorstore
     logger.info(f"[RAG] Indexed {len(split_docs)} chunks into vector store for site_id={site_id} ({site_name})")

@@ -39,10 +39,19 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
         )
     except Exception as exc:
         logger.error(f"[/chat] RAG execution failed: {exc}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"AI Chatbot service error: {str(exc)}"
-        )
+        err_msg = str(exc)
+        if any(term in err_msg.lower() for term in ["insufficient balance", "402", "credit", "rate limit", "quota"]):
+            site_name = site.name if site else "this heritage site"
+            reply = (
+                f"Namaste! I am SHREE, your AI guide for {site_name}. "
+                "Our live AI chat is currently momentarily unavailable due to API balance/quota limits. "
+                "Please explore the spot audio guides and map landmarks in the app!"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"AI Chatbot service error: {str(exc)}"
+            )
 
     # Persist the exchange to user_chat_history (best-effort).
     # Skipped silently when no firebase_uid is provided OR the user is not
