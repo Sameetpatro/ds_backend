@@ -165,6 +165,37 @@ class TestLangChainRAG(unittest.TestCase):
         import asyncio
         asyncio.run(self._async_test_rag_chat())
 
+    def test_resolve_chat_site_and_node_mismatched_site_id(self):
+        """Verify that a valid node_id corrects any mismatched site_id."""
+        from app.routers.chat import resolve_chat_site_and_node
+        from app.schemas import ChatRequest
+
+        # Node 2 belongs to site 1 ("IIIT Sonepat")
+        req = ChatRequest(
+            site_id=999,  # mismatched site_id
+            node_id=2,    # belongs to site 1
+            message="What is here?",
+        )
+        site, node = resolve_chat_site_and_node(req, self.db)
+        self.assertEqual(site.id, 1)
+        self.assertEqual(site.name, "IIIT Sonepat")
+        self.assertEqual(node.id, 2)
+        self.assertEqual(node.name, "Canteen Area")
+
+    def test_resolve_chat_site_and_node_qr_value(self):
+        """Verify that a valid qr_value resolves both the node and its site."""
+        from app.routers.chat import resolve_chat_site_and_node
+        from app.schemas import ChatRequest
+
+        req = ChatRequest(
+            qr_value="https://humsafar.vercel.app/node/Q0v",
+            message="Tell me about this gate",
+        )
+        site, node = resolve_chat_site_and_node(req, self.db)
+        self.assertEqual(site.id, 1)
+        self.assertEqual(node.id, 1)
+        self.assertEqual(node.name, "Main Entrance Gate")
+
 
 if __name__ == "__main__":
     unittest.main()

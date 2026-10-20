@@ -332,58 +332,114 @@ async def run_rag_chat(
     language_instruction: Optional[str] = None,
 ) -> str:
     """
-    Executes LangChain RAG pipeline with strict guardrails:
-    1. Fetches or builds cached in-memory vector store for the site.
-    2. Performs semantic similarity search against the user's query.
-    3. Pinned node guardrails ensure persona, boundary adherence, and anti-hallucination.
-    4. Invokes LLM via OpenRouter.
+    Executes grounded AI chat pipeline for Humsafar (SHREE):
+    1. Fetches curated site-level prompt from the `prompts` table for the explored site.
+    2. Fetches curated node-level prompt from the `prompts` table for the scanned QR spot (if any).
+    3. Retrieves all monuments/spots at this site for complete spatial awareness.
+    4. Retrieves supplemental semantic chunks from the site's vector store.
+    5. Assembles a grounded system prompt ensuring Shree speaks strictly about the active heritage site.
+    6. Invokes LLM.
     """
-    site_name, node_name, active_guardrails = get_active_guardrails_and_node(db, site_id, node_id)
+    site = db.query(HeritageSite).filter(HeritageSite.id == site_id).first()
+    site_name = site.name if site else f"Site #{site_id}"
 
-    # 1. Retrieve relevant knowledge chunks
+    # 1. Fetch site-level curated prompt from database
+    site_prompt = db.query(Prompt).filter(
+        Prompt.site_id == site_id,
+        Prompt.node_id == None
+    ).first()
+    site_prompt_content = site_prompt.content.strip() if site_prompt and site_prompt.content else ""
+
+    # 2. Fetch node-level curated prompt from database (when user scanned a QR code at a spot)
+    node_prompt_content = ""
+    node_name = "General Site Entrance"
+    node = None
+    if node_id:
+        node = db.query(Node).filter(Node.id == node_id).first()
+        if node:
+            node_name = node.name
+        node_prompt = db.query(Prompt).filter(
+            Prompt.site_id == site_id,
+            Prompt.node_id == node_id
+        ).first()
+        if node_prompt and node_prompt.content:
+            node_prompt_content = node_prompt.content.strip()
+        elif node and node.description:
+            node_prompt_content = node.description.strip()
+
+    # 3. List of all spots at this site for spatial context
+    all_nodes = db.query(Node).filter(Node.site_id == site_id).order_by(Node.sequence_order).all()
+    spots_list = []
+    for n in all_nodes:
+        spots_list.append(f"- Spot #{n.sequence_order}: {n.name}" + (f" ({n.description})" if n.description else ""))
+    spots_summary = "\n".join(spots_list)
+
+    # 4. Supplemental site details from HeritageSite columns
+    facts = []
+    if site:
+        if site.summary: facts.append(f"Summary: {site.summary}")
+        if site.history: facts.append(f"History: {site.history}")
+        if site.fun_facts: facts.append(f"Fun Facts: {site.fun_facts}")
+        if site.helpline_number: facts.append(f"Helpline: {site.helpline_number}")
+    site_facts_text = "\n".join(facts)
+
+    # 5. Retrieve supplemental knowledge chunks via vector search
+    retrieved_context = ""
     try:
         vectorstore = get_or_build_site_vectorstore(db, site_id)
-        # Search for top-3 relevant context chunks
         retrieved_docs = vectorstore.similarity_search(query=message, k=3)
         retrieved_context = format_retrieved_context(retrieved_docs)
     except Exception as exc:
-        logger.warning(f"[RAG] Vector retrieval failed ({exc}), falling back to direct prompt context")
-        retrieved_context = active_guardrails or f"{site_name} is a heritage site."
+        logger.warning(f"[RAG] Vector retrieval failed ({exc})")
 
-    # 2. Build system prompt combining Persona, Guardrails, and Grounded Context
-    if node_id:
+    # 6. Assemble context blocks
+    context_blocks = []
+    if site_prompt_content:
+        context_blocks.append(f"=== HERITAGE SITE CONTEXT ({site_name.upper()}) ===\n{site_prompt_content}")
+    elif site_facts_text:
+        context_blocks.append(f"=== HERITAGE SITE CONTEXT ({site_name.upper()}) ===\n{site_facts_text}")
+
+    if node_prompt_content:
+        context_blocks.append(f"=== CURRENT SCANNED SPOT ({node_name.upper()}) ===\n{node_prompt_content}")
+
+    if spots_summary:
+        context_blocks.append(f"=== MONUMENT SPOTS AT {site_name.upper()} ===\n{spots_summary}")
+
+    if site_facts_text and site_prompt_content:
+        context_blocks.append(f"=== HISTORICAL FACTS & DETAILS ===\n{site_facts_text}")
+
+    if retrieved_context and retrieved_context != "No specific database documents retrieved.":
+        context_blocks.append(f"=== ADDITIONAL RETRIEVED KNOWLEDGE ===\n{retrieved_context}")
+
+    full_heritage_context = "\n\n".join(context_blocks)
+
+    # 7. Build system prompt
+    if node:
         location_header = (
-            f"The visitor is standing at: {node_name} within {site_name}. "
-            f"You must speak as the guide for this specific spot."
+            f"The visitor has scanned the QR code at: {node_name} (Stop #{node.sequence_order}) within {site_name}. "
+            f"You are guiding them specifically at this spot while answering questions about the entire monument."
         )
     else:
         location_header = (
             f"The visitor is currently exploring {site_name}. "
-            f"You are introducing the heritage site as a whole."
+            f"You are guiding them through this heritage site as a whole."
         )
 
     lang_line = f"\nLANGUAGE DIRECTIVE: {language_instruction}\n" if language_instruction else ""
     system_prompt = f"""You are SHREE, the official, engaging AI heritage guide of HUMSAFAR.{lang_line}
 {location_header}
 
-CURRENT SPOT GUARDRAILS & BOUNDARIES:
-{active_guardrails or 'Keep responses focused strictly on this location.'}
+{full_heritage_context}
 
 STRICT OPERATIONAL RULES:
-1. Grounding & Anti-Hallucination: Answer the visitor's question ONLY using the factual information in the "Retrieved Heritage Knowledge" and "Spot Guardrails" below.
-2. Boundaries: Do NOT answer questions unrelated to {site_name}. If the visitor asks off-topic questions (e.g. general trivia, coding, unrelated history), politely inform them that as Shree, you can only assist with this heritage site.
-3. Amenities: If the visitor asks about washrooms, drinking water, restaurants, or nearby facilities, guide them to use the "Directions" feature in the site details screen.
-4. Media: If the visitor asks for video or audio guides, tell them to tap the media buttons in the app.
-5. Unknown Facts: If the answer is NOT present in the retrieved knowledge, do NOT invent or guess historical figures, dates, or details. Simply state politely that you do not have that specific information for this spot.
-6. Tone & Format: Be warm, descriptive, and conversational (3 to 5 sentences maximum). Do NOT use markdown, bold asterisks (**), or bullet points — use plain natural speech only.
-
-RETRIEVED HERITAGE KNOWLEDGE:
----------------------------------------------
-{retrieved_context}
----------------------------------------------
+1. Grounding & Accuracy: Answer the visitor's question using the factual heritage knowledge provided for {site_name} above. Explain the history, architecture, builders, dates, and significance accurately based on this context.
+2. Boundaries: Focus strictly on {site_name} and its spots. If the visitor asks completely off-topic questions (e.g. coding, math, general trivia, unrelated modern news), politely explain that as Shree, you can only assist with {site_name}.
+3. Directions & Amenities: If the visitor asks about washrooms, drinking water, cafeteria, or exit, guide them to the app's "Directions" / map feature in the site details screen.
+4. Media: If the visitor asks for audio or video, tell them to tap the media buttons in the app.
+5. Tone & Format: Be warm, descriptive, and conversational (3 to 5 sentences maximum). Do NOT use markdown asterisks (**), hashtags (#), or bullet points — use plain natural speech only.
 """
 
-    # 3. Assemble LangChain messages (System + History + Current Query)
+    # 8. Assemble LangChain messages (System + History + Current Query)
     messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
 
     for turn in history:
@@ -398,7 +454,7 @@ RETRIEVED HERITAGE KNOWLEDGE:
 
     messages.append(HumanMessage(content=message))
 
-    # 4. Invoke LLM
+    # 9. Invoke LLM
     llm = get_llm(temperature=0.2)
     response = await llm.ainvoke(messages)
     return response.content.strip()

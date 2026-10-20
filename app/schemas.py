@@ -154,10 +154,11 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    site_id: int
-    node_id: Optional[int] = None
-    message: str
-    history: List[ChatMessage] = []
+    site_id:      Optional[int] = None
+    node_id:      Optional[int] = None
+    qr_value:     Optional[str] = None
+    message:      str
+    history:      List[ChatMessage] = []
     # Optional persistence fields. When firebase_uid is provided the user's
     # message and the assistant reply are written to user_chat_history.
     # Calls without firebase_uid still work (no DB write) — keeps backwards

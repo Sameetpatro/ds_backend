@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import UserChatHistory
+from app.models import HeritageSite, Node, UserChatHistory
 from app.routers.users import get_user_uuid
 from app.schemas import VoiceChatResponse
 from app.services import voice_orchestrator
@@ -42,6 +42,20 @@ async def voice_chat(
 
     node_id_int = int(node_id) if node_id.strip().isdigit() else None
     trip_id_int = int(trip_id) if trip_id.strip().isdigit() else None
+
+    # Verify and ground site_id with node.site_id if node_id is provided
+    if node_id_int:
+        node_record = db.query(Node).filter(Node.id == node_id_int).first()
+        if node_record and node_record.site_id:
+            if str(node_record.site_id) != str(site_id).strip():
+                logger.warning(
+                    f"[/voice-chat] Overriding mismatched site_id '{site_id}' with node.site_id '{node_record.site_id}' "
+                    f"for node {node_id_int} ('{node_record.name}')"
+                )
+                site_id = str(node_record.site_id)
+                site_record = db.query(HeritageSite).filter(HeritageSite.id == node_record.site_id).first()
+                if site_record:
+                    site_name = site_record.name
 
     logger.info(
         f"[/voice-chat] site='{site_name}' id={site_id} node={node_id_int} "
